@@ -339,6 +339,13 @@ impl ManagedTorrent {
         })
         .unwrap_or(0)
     }
+    
+    /// Get the current streaming window for a file
+    pub fn get_streaming_window(&self, file_id: usize) -> Option<std::ops::Range<u32>> {
+        self.with_chunk_tracker(|ct| ct.get_streaming_window(file_id))
+            .ok()
+            .flatten()
+    }
 
     /// Get the live state if the torrent is live.
     pub fn live(&self) -> Option<Arc<TorrentStateLive>> {

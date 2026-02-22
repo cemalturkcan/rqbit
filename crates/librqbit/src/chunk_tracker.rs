@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::Context;
 use buffers::ByteBuf;
@@ -9,7 +9,7 @@ use tracing::{debug, trace};
 use crate::{
     bitv::{BitV, BoxBitV},
     file_info::FileInfo,
-    type_aliases::{BF, BS, FileInfos, FilePriorities},
+    type_aliases::{FileInfos, FilePriorities, BF, BS},
 };
 
 pub struct ChunkTracker {
@@ -42,6 +42,9 @@ pub struct ChunkTracker {
     // Quick to retrieve stats, that MUST be in sync with the BFs
     // above (have/selected).
     hns: HaveNeededSelected,
+
+    // Track current streaming window per file (file_id -> (start_piece, end_piece))
+    streaming_windows: HashMap<usize, std::ops::Range<u32>>,
 }
 
 /// Result of updating the streaming window
@@ -191,6 +194,7 @@ impl ChunkTracker {
             have: have_pieces,
             hns: HaveNeededSelected::default(),
             per_file_bytes: vec![0; file_infos.len()],
+            streaming_windows: HashMap::new(),
         };
         ct.recalculate_per_file_bytes(file_infos);
         ct.hns = ct.calc_hns();
@@ -324,7 +328,9 @@ impl ChunkTracker {
         chunk_range.set(chunk_info.chunk_index as usize, true);
         trace!(
             "piece={}, chunk_info={:?}, bits={:?}",
-            piece.index, chunk_info, chunk_range,
+            piece.index,
+            chunk_info,
+            chunk_range,
         );
 
         if chunk_range.all() {
@@ -462,12 +468,21 @@ impl ChunkTracker {
         // Recalculate stats
         self.hns = self.calc_hns();
 
+        // Store the streaming window for this file
+        self.streaming_windows
+            .insert(file_id, start_piece..end_piece);
+
         StreamingWindowUpdate {
             pieces_added: added,
             pieces_removed: removed,
             window_start_piece: start_piece,
             window_end_piece: end_piece,
         }
+    }
+
+    /// Get the current streaming window for a file
+    pub fn get_streaming_window(&self, file_id: usize) -> Option<std::ops::Range<u32>> {
+        self.streaming_windows.get(&file_id).cloned()
     }
 
     // Returns remaining bytes
@@ -496,7 +511,7 @@ mod tests {
         bitv::BitV, chunk_tracker::HaveNeededSelected, file_info::FileInfo, type_aliases::BF,
     };
 
-    use super::{ChunkTracker, compute_chunk_have_status};
+    use super::{compute_chunk_have_status, ChunkTracker};
 
     #[test]
     fn test_compute_chunk_status() {
@@ -768,9 +783,11 @@ mod tests {
         };
 
         // Start with no pieces downloaded, all selected
-        let have_pieces = BF::from_boxed_slice(vec![0u8; l.piece_bitfield_bytes()].into_boxed_slice());
+        let have_pieces =
+            BF::from_boxed_slice(vec![0u8; l.piece_bitfield_bytes()].into_boxed_slice());
         let selected_pieces = {
-            let mut bf = BF::from_boxed_slice(vec![0u8; l.piece_bitfield_bytes()].into_boxed_slice());
+            let mut bf =
+                BF::from_boxed_slice(vec![0u8; l.piece_bitfield_bytes()].into_boxed_slice());
             bf.get_mut(0..10).unwrap().fill(true);
             bf
         };
@@ -780,7 +797,8 @@ mod tests {
             selected_pieces,
             l,
             &vec![file_info.clone()],
-        ).unwrap();
+        )
+        .unwrap();
 
         // Initially all pieces should be queued
         for i in 0..10 {
@@ -805,7 +823,10 @@ mod tests {
         assert!(!ct.queue_pieces[3], "piece 3 should not be queued");
 
         // Pieces in the window SHOULD be queued
-        assert!(ct.queue_pieces[4], "piece 4 should be queued (backward buffer)");
+        assert!(
+            ct.queue_pieces[4],
+            "piece 4 should be queued (backward buffer)"
+        );
         assert!(ct.queue_pieces[5], "piece 5 should be queued (current)");
         assert!(ct.queue_pieces[6], "piece 6 should be queued (forward)");
         assert!(ct.queue_pieces[7], "piece 7 should be queued (forward)");
@@ -829,9 +850,11 @@ mod tests {
             attrs: Default::default(),
         };
 
-        let have_pieces = BF::from_boxed_slice(vec![0u8; l.piece_bitfield_bytes()].into_boxed_slice());
+        let have_pieces =
+            BF::from_boxed_slice(vec![0u8; l.piece_bitfield_bytes()].into_boxed_slice());
         let selected_pieces = {
-            let mut bf = BF::from_boxed_slice(vec![0u8; l.piece_bitfield_bytes()].into_boxed_slice());
+            let mut bf =
+                BF::from_boxed_slice(vec![0u8; l.piece_bitfield_bytes()].into_boxed_slice());
             bf.get_mut(0..10).unwrap().fill(true);
             bf
         };
@@ -841,7 +864,8 @@ mod tests {
             selected_pieces,
             l,
             &vec![file_info.clone()],
-        ).unwrap();
+        )
+        .unwrap();
 
         // First, set window at position 20%
         let position1 = (piece_len as u64) * 2;
@@ -858,12 +882,24 @@ mod tests {
         let result = ct.update_streaming_window(&file_info, position2, piece_len as u64, forward);
 
         // Old pieces should be removed
-        assert!(!ct.queue_pieces[2], "piece 2 should be removed after seek forward");
-        assert!(!ct.queue_pieces[3], "piece 3 should be removed after seek forward");
-        assert!(!ct.queue_pieces[4], "piece 4 should be removed after seek forward");
+        assert!(
+            !ct.queue_pieces[2],
+            "piece 2 should be removed after seek forward"
+        );
+        assert!(
+            !ct.queue_pieces[3],
+            "piece 3 should be removed after seek forward"
+        );
+        assert!(
+            !ct.queue_pieces[4],
+            "piece 4 should be removed after seek forward"
+        );
 
         // New window pieces should be queued
-        assert!(ct.queue_pieces[6], "piece 6 should be queued (backward buffer)");
+        assert!(
+            ct.queue_pieces[6],
+            "piece 6 should be queued (backward buffer)"
+        );
         assert!(ct.queue_pieces[7], "piece 7 should be queued (current)");
         assert!(ct.queue_pieces[8], "piece 8 should be queued (forward)");
         assert!(ct.queue_pieces[9], "piece 9 should be queued (forward)");
@@ -885,12 +921,14 @@ mod tests {
         };
 
         // Mark pieces 5 and 6 as already downloaded
-        let mut have_pieces = BF::from_boxed_slice(vec![0u8; l.piece_bitfield_bytes()].into_boxed_slice());
+        let mut have_pieces =
+            BF::from_boxed_slice(vec![0u8; l.piece_bitfield_bytes()].into_boxed_slice());
         have_pieces.set(5, true);
         have_pieces.set(6, true);
 
         let selected_pieces = {
-            let mut bf = BF::from_boxed_slice(vec![0u8; l.piece_bitfield_bytes()].into_boxed_slice());
+            let mut bf =
+                BF::from_boxed_slice(vec![0u8; l.piece_bitfield_bytes()].into_boxed_slice());
             bf.get_mut(0..10).unwrap().fill(true);
             bf
         };
@@ -900,11 +938,18 @@ mod tests {
             selected_pieces,
             l,
             &vec![file_info.clone()],
-        ).unwrap();
+        )
+        .unwrap();
 
         // Initially: pieces 5, 6 are NOT in queue (already have), others ARE in queue
-        assert!(!ct.queue_pieces[5], "piece 5 is already have, should not be queued initially");
-        assert!(!ct.queue_pieces[6], "piece 6 is already have, should not be queued initially");
+        assert!(
+            !ct.queue_pieces[5],
+            "piece 5 is already have, should not be queued initially"
+        );
+        assert!(
+            !ct.queue_pieces[6],
+            "piece 6 is already have, should not be queued initially"
+        );
         assert!(ct.queue_pieces[7], "piece 7 should be queued initially");
         assert!(ct.queue_pieces[8], "piece 8 should be queued initially");
 
@@ -914,15 +959,27 @@ mod tests {
         ct.update_streaming_window(&file_info, position, piece_len as u64, forward);
 
         // Pieces 5 and 6 should STILL not be queued (already have)
-        assert!(!ct.queue_pieces[5], "piece 5 is already have, should not be queued");
-        assert!(!ct.queue_pieces[6], "piece 6 is already have, should not be queued");
+        assert!(
+            !ct.queue_pieces[5],
+            "piece 5 is already have, should not be queued"
+        );
+        assert!(
+            !ct.queue_pieces[6],
+            "piece 6 is already have, should not be queued"
+        );
 
         // Pieces 7 and 8 are in window and not downloaded - SHOULD be queued
         assert!(ct.queue_pieces[7], "piece 7 should be queued");
         assert!(ct.queue_pieces[8], "piece 8 should be queued");
 
         // Pieces outside window should NOT be queued
-        assert!(!ct.queue_pieces[0], "piece 0 should not be queued (outside window)");
-        assert!(!ct.queue_pieces[1], "piece 1 should not be queued (outside window)");
+        assert!(
+            !ct.queue_pieces[0],
+            "piece 0 should not be queued (outside window)"
+        );
+        assert!(
+            !ct.queue_pieces[1],
+            "piece 1 should not be queued (outside window)"
+        );
     }
 }
