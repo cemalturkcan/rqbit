@@ -248,7 +248,7 @@ impl ManagedTorrent {
         f(&mut self.locked.write().state)
     }
 
-    pub(crate) fn with_chunk_tracker<R>(
+    pub fn with_chunk_tracker<R>(
         &self,
         f: impl FnOnce(&ChunkTracker) -> R,
     ) -> anyhow::Result<R> {
@@ -261,6 +261,43 @@ impl ManagedTorrent {
                 .context("error getting chunks")?)),
             _ => bail!("no chunk tracker, torrent neither paused nor live"),
         }
+    }
+
+    /// Get the total number of pieces in the torrent
+    pub fn total_pieces(&self) -> usize {
+        self.with_metadata(|m| m.lengths().total_pieces() as usize)
+            .unwrap_or(0)
+    }
+
+    /// Get a bitfield of downloaded pieces as Vec<bool>
+    pub fn get_piece_bitfield(&self) -> Vec<bool> {
+        self.with_chunk_tracker(|ct| {
+            let have_pieces = ct.get_have_pieces();
+            have_pieces.as_slice()
+                .iter()
+                .map(|b| *b)
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+
+    /// Check if a specific piece is downloaded
+    pub fn is_piece_downloaded(&self, piece_index: usize) -> bool {
+        self.with_chunk_tracker(|ct| {
+            let lengths = ct.get_lengths();
+            lengths.validate_piece_index(piece_index as u32)
+                .map(|idx| ct.is_piece_have(idx))
+                .unwrap_or(false)
+        })
+        .unwrap_or(false)
+    }
+
+    /// Get the number of downloaded pieces
+    pub fn downloaded_pieces_count(&self) -> usize {
+        self.with_chunk_tracker(|ct| {
+            ct.get_have_pieces().as_slice().count_ones()
+        })
+        .unwrap_or(0)
     }
 
     /// Get the live state if the torrent is live.
