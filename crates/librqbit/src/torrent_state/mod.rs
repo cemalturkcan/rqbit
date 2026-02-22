@@ -299,7 +299,7 @@ impl ManagedTorrent {
             .context("invalid file_id")?;
 
         self.with_chunk_tracker_mut(|ct| {
-            ct.update_streaming_window(file_info, current_position, backward_bytes, forward_bytes)
+            ct.update_streaming_window(file_id, file_info, current_position, backward_bytes, forward_bytes)
         })
     }
 

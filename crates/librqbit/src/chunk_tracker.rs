@@ -420,6 +420,7 @@ impl ChunkTracker {
     /// The number of pieces added and removed from the queue
     pub fn update_streaming_window(
         &mut self,
+        file_id: usize,
         file_info: &FileInfo,
         current_position: u64,
         backward_bytes: u64,
@@ -811,7 +812,7 @@ mod tests {
         let backward = piece_len as u64; // ~1 piece backward
         let forward = (piece_len as u64) * 3; // ~3 pieces forward
 
-        let result = ct.update_streaming_window(&file_info, position, backward, forward);
+        let result = ct.update_streaming_window(0, &file_info, position, backward, forward);
 
         // Window should be roughly pieces 4-8 (backward: 4, current+forward: 5,6,7,8)
         assert!(result.pieces_removed > 0, "should have removed some pieces");
@@ -870,7 +871,7 @@ mod tests {
         // First, set window at position 20%
         let position1 = (piece_len as u64) * 2;
         let forward = (piece_len as u64) * 3;
-        ct.update_streaming_window(&file_info, position1, piece_len as u64, forward);
+        ct.update_streaming_window(0, &file_info, position1, piece_len as u64, forward);
 
         // Verify pieces 1-5 are in queue
         assert!(ct.queue_pieces[2], "piece 2 should be queued");
@@ -879,7 +880,8 @@ mod tests {
 
         // Now seek forward to 70%
         let position2 = (piece_len as u64) * 7;
-        let result = ct.update_streaming_window(&file_info, position2, piece_len as u64, forward);
+        let result =
+            ct.update_streaming_window(0, &file_info, position2, piece_len as u64, forward);
 
         // Old pieces should be removed
         assert!(
@@ -956,7 +958,7 @@ mod tests {
         // Update window centered around pieces 5-8
         let position = (piece_len as u64) * 5;
         let forward = (piece_len as u64) * 4; // Forward to piece 9
-        ct.update_streaming_window(&file_info, position, piece_len as u64, forward);
+        ct.update_streaming_window(0, &file_info, position, piece_len as u64, forward);
 
         // Pieces 5 and 6 should STILL not be queued (already have)
         assert!(
