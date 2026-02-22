@@ -263,6 +263,46 @@ impl ManagedTorrent {
         }
     }
 
+    pub(crate) fn with_chunk_tracker_mut<R>(
+        &self,
+        f: impl FnOnce(&mut ChunkTracker) -> R,
+    ) -> anyhow::Result<R> {
+        let g = self.locked.read();
+        match &g.state {
+            ManagedTorrentState::Paused(_) => {
+                // Paused torrents can't update streaming window - they need to be live
+                bail!("cannot modify chunk tracker while paused")
+            }
+            ManagedTorrentState::Live(l) => Ok(f(l
+                .lock_write("chunk_tracker_mut")
+                .get_chunks_mut()
+                .context("error getting chunks")?)),
+            _ => bail!("no chunk tracker, torrent neither paused nor live"),
+        }
+    }
+
+    /// Update the streaming download window
+    ///
+    /// This restricts downloading to only pieces within the specified window
+    /// around the current playback position.
+    pub fn update_streaming_window(
+        &self,
+        file_id: usize,
+        current_position: u64,
+        backward_bytes: u64,
+        forward_bytes: u64,
+    ) -> anyhow::Result<crate::chunk_tracker::StreamingWindowUpdate> {
+        let metadata = self.metadata.load_full().context("metadata not available")?;
+        let file_info = metadata
+            .file_infos
+            .get(file_id)
+            .context("invalid file_id")?;
+
+        self.with_chunk_tracker_mut(|ct| {
+            ct.update_streaming_window(file_info, current_position, backward_bytes, forward_bytes)
+        })
+    }
+
     /// Get the total number of pieces in the torrent
     pub fn total_pieces(&self) -> usize {
         self.with_metadata(|m| m.lengths().total_pieces() as usize)
